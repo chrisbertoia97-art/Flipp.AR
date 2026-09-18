@@ -34,22 +34,37 @@ const EFFECTIVE_ADMIN_PASSWORD = ADMIN_PASSWORD || DEV_DEFAULT_PASSWORD;
 const app = express();
 app.set("trust proxy", 1); // necesario detrás de proxies de hosting (Render/Railway) para rate limiting e IPs correctas
 
-// CORS: en producción el mismo backend sirve el frontend (mismo origen), así que
-// por defecto no hace falta abrir CORS a nadie. Si en algún momento el frontend
-// se despliega en un dominio separado, se habilita explícitamente vía env var.
+// CORS: solo se aplica a la API. Nunca a los archivos estáticos del sitio: Vite
+// agrega el atributo `crossorigin` a <script>/<link> del build, lo que hace que
+// el navegador mande header Origin incluso en pedidos del mismo sitio — si el
+// middleware de CORS corriera para todo el server, terminaría bloqueando sus
+// propios archivos (esto pasó y causaba una pantalla en blanco en producción).
+//
+// La comparación es contra el host real del pedido (no una lista fija), porque
+// el mismo dominio público (ej. flipp-ar.onrender.com) tiene que poder llamar a
+// su propia API sin configuración adicional — incluyendo los POST de los
+// formularios, donde Chrome también manda Origin aunque sea el mismo sitio.
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
 app.use(
-  cors({
-    origin(origin, cb) {
-      if (!origin) return cb(null, true); // same-origin, curl, apps móviles
-      if (!isProd) return cb(null, true); // desarrollo: permisivo
-      if (allowedOrigins.includes(origin)) return cb(null, true);
-      return cb(new Error("Origen no permitido por CORS"));
-    },
+  "/api",
+  cors((req, cb) => {
+    const origin = req.header("Origin");
+    if (!origin) return cb(null, { origin: true }); // sin Origin: curl, apps móviles, same-origin GET normal
+    if (!isProd) return cb(null, { origin: true }); // desarrollo: permisivo
+
+    let sameOrigin = false;
+    try {
+      sameOrigin = new URL(origin).host === req.headers.host;
+    } catch {
+      sameOrigin = false;
+    }
+    const allowed = sameOrigin || allowedOrigins.includes(origin);
+    if (!allowed) console.warn(`CORS: origen rechazado "${origin}" (host del pedido: ${req.headers.host})`);
+    cb(null, { origin: allowed });
   })
 );
 app.use(express.json({ limit: "2mb" }));
